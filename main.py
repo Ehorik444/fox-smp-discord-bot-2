@@ -6,9 +6,6 @@ from datetime import datetime, timedelta
 import io
 
 # Настройки
-import os
-
-# Токен берётся из переменной окружения DISCORD_TOKEN (настраивается в панели хостинга)
 TOKEN = "MTUxMzE5NzY2MDc3NjE3MzU5OA.GLJKwH.MQaphLmtbYfxev-EWjojfwBBoqE_woWKPJzFXg"
 LOG_CHANNEL_ID = 1514694347441049601  # Канал для логов
 TICKETS_CHANNEL_ID = 1514694429796073522  # Канал для тикетов
