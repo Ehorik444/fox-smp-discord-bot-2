@@ -9,7 +9,9 @@ import io
 import os
 
 # Токен берётся из переменной окружения DISCORD_TOKEN (настраивается в панели хостинга)
-TOKEN = "MTUxMzE5NzY2MDc3NjE3MzU5OA.GLJKwH.MQaphLmtbYfxev-EWjojfwBBoqE_woWKPJzFXg"
+TOKEN = os.getenv("DISCORD_TOKEN")
+if not TOKEN:
+    raise RuntimeError("Переменная окружения DISCORD_TOKEN не задана! Добавь её в панели хостинга.")
 LOG_CHANNEL_ID = 1514694347441049601  # Канал для логов
 TICKETS_CHANNEL_ID = 1514694429796073522  # Канал для тикетов
 TICKETS_STORAGE_CHANNEL_ID = 1514693865096085595  # Хранилище для данных тикетов
