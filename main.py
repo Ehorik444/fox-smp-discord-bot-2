@@ -6,21 +6,26 @@ from datetime import datetime, timedelta
 import io
 
 # Настройки
-TOKEN = "MTUxMzE5NzY2MDc3NjE3MzU5OA.GLJKwH.MQaphLmtbYfxev-EWjojfwBBoqE_woWKPJzFXg"
-LOG_CHANNEL_ID = 1515062614680670319  # Канал для логов
-TICKETS_CHANNEL_ID = 1513944469995655279  # Канал для тикетов
+import os
+
+# Токен берётся из переменной окружения DISCORD_TOKEN (настраивается в панели хостинга)
+TOKEN = os.getenv("DISCORD_TOKEN")
+if not TOKEN:
+    raise RuntimeError("Переменная окружения DISCORD_TOKEN не задана! Добавь её в панели хостинга.")
+LOG_CHANNEL_ID = 1514694347441049601  # Канал для логов
+TICKETS_CHANNEL_ID = 1514694429796073522  # Канал для тикетов
 TICKETS_STORAGE_CHANNEL_ID = 1514693865096085595  # Хранилище для данных тикетов
-VOICE_STORAGE_CHANNEL_ID = 1514326798656081930  # Хранилище для голосовых комнат
-ARCHIVE_CHANNEL_ID = 1514650516779565189  # Архив для мутов и банов
-BAN_CHANNEL_1 = 1514266059903991878  # Канал 1 для забаненных
-BAN_CHANNEL_2 = 1514654568913305780  # Канал 2 для забаненных
+VOICE_STORAGE_CHANNEL_ID = 1514693580235477012  # Хранилище для голосовых комнат
+ARCHIVE_CHANNEL_ID = 1514694263873474703  # Архив для мутов и банов
+BAN_CHANNEL_1 = 1514694051914449039  # Канал 1 для забаненных
+BAN_CHANNEL_2 = 1514694171879805110  # Канал 2 для забаненных
 
 # ID ролей для наказаний (если None, будут созданы автоматически)
 MUTE_ROLE_ID = None  # Роль для мута (если None - создастся 'Блокировка чата')
 BAN_ROLE_ID = None  # Роль для бана (если None - создастся 'Пользователь заблокирован')
 
 # Шаблонный голосовой канал и категория
-TEMPLATE_VOICE_CHANNEL_NAME = "🎤 | Создать комнату |🎤"
+TEMPLATE_VOICE_CHANNEL_NAME = "создать войс"
 VOICE_CATEGORY_ID = None  # ID категории где находится "создать войс" канал
 
 # Интенты
@@ -55,6 +60,10 @@ async def on_ready():
     print(f"Бот {bot.user} запущен!")
     print(f"ID бота: {bot.user.id}")
     print("Бот готов к работе!")
+    # Регистрируем вечные панели — кнопки работают даже после перезапуска бота
+    bot.add_view(ModerationPanelView())
+    bot.add_view(SupportPanelView())
+    print("✅ Вечные панели зарегистрированы")
     # Восстанавливаем таймеры для активных мутов/банов после перезапуска
     # (active_mutes и active_bans хранятся в памяти, при перезапуске сбрасываются)
     print("⚠️ Внимание: активные муты/баны сбрасываются при перезапуске бота!")
@@ -62,49 +71,18 @@ async def on_ready():
 
 @bot.event
 async def on_guild_channel_create(channel):
-    """При создании нового канала — применяем ограничения ролей бана и мута"""
+    """При создании нового канала — скрываем его от забаненных пользователей через роль"""
+    # Роль бана уже имеет deny view_channel=False на @everyone через overwrites всех каналов,
+    # но надёжнее явно прописывать запрет для роли бана на новом канале
     guild = channel.guild
-
-    # Роль бана: скрываем канал если есть активные баны
-    if active_bans:
-        ban_role = discord.utils.get(guild.roles, name=ban_role_name)
-        if ban_role:
+    ban_role = discord.utils.get(guild.roles, name="Пользователь заблокирован")
+    if ban_role and isinstance(channel, (discord.TextChannel, discord.VoiceChannel, discord.ForumChannel)):
+        # Проверяем, есть ли активные баны
+        if active_bans:
             try:
                 await channel.set_permissions(ban_role, view_channel=False)
             except Exception as e:
                 print(f"Не удалось скрыть новый канал от роли бана: {e}")
-
-    # Роль мута: запрещаем писать/говорить если есть активные муты
-    if active_mutes:
-        mute_role = discord.utils.get(guild.roles, name=mute_role_name)
-        if mute_role:
-            try:
-                await channel.set_permissions(
-                    mute_role,
-                    send_messages=False,
-                    speak=False,
-                    add_reactions=False,
-                    send_messages_in_threads=False
-                )
-            except Exception as e:
-                print(f"Не удалось применить мут-роль к новому каналу: {e}")
-
-
-@bot.event
-async def on_message(message):
-    """Подстраховка: удаляем сообщения замученных, даже если права канала не сработали"""
-    if message.author.bot:
-        await bot.process_commands(message)
-        return
-
-    if message.author.id in active_mutes:
-        try:
-            await message.delete()
-        except Exception:
-            pass
-        return  # Команды от замученных не обрабатываем
-
-    await bot.process_commands(message)
 
 
 @bot.event
@@ -553,15 +531,6 @@ async def create_voice_room(member, template_channel):
             except Exception as e:
                 print(f"Не удалось скрыть войс от роли бана: {e}")
 
-    # Если есть активные муты — запрещаем говорить в новом войсе
-    if active_mutes:
-        mute_role = discord.utils.get(guild.roles, name=mute_role_name)
-        if mute_role:
-            try:
-                await voice_channel.set_permissions(mute_role, speak=False, send_messages=False)
-            except Exception as e:
-                print(f"Не удалось применить мут-роль к войсу: {e}")
-
     try:
         await member.move_to(voice_channel)
     except Exception as e:
@@ -991,11 +960,7 @@ async def _auto_unmute(user_id: int, guild_id: int, mute_role_id: int, delay_sec
             await member.remove_roles(mute_role, reason="Мут истёк")
         except Exception:
             pass
-        if member.voice:
-            try:
-                await member.edit(mute=False)
-            except Exception:
-                pass
+    # Нативный тайм-аут Discord истекает сам — снимать не нужно
 
     # Обновляем историю
     for p in punishment_history:
@@ -1094,11 +1059,18 @@ class ModerationModal(Modal):
         ))
 
     async def on_submit(self, interaction: discord.Interaction):
+        # СРАЗУ откладываем ответ — защита от 404 Unknown interaction
+        await interaction.response.defer(ephemeral=True)
+
         user_input = self.children[0].value.strip()
         try:
             duration_minutes = int(self.children[1].value)
         except ValueError:
-            await interaction.response.send_message("❌ Длительность должна быть числом!", ephemeral=True)
+            await interaction.followup.send("❌ Длительность должна быть числом!", ephemeral=True)
+            return
+
+        if duration_minutes <= 0:
+            await interaction.followup.send("❌ Длительность должна быть больше 0!", ephemeral=True)
             return
 
         reason = self.children[2].value
@@ -1117,50 +1089,49 @@ class ModerationModal(Modal):
             pass
 
         if not user:
-            await interaction.response.send_message("❌ Пользователь не найден!", ephemeral=True)
+            await interaction.followup.send("❌ Пользователь не найден!", ephemeral=True)
             return
 
         member = guild.get_member(user.id)
 
         try:
             if self.action_type == "мут":
-                # Сразу откладываем ответ — настройка прав занимает время
-                await interaction.response.defer(ephemeral=True)
+                if not member:
+                    await interaction.followup.send("❌ Пользователь не на сервере!", ephemeral=True)
+                    return
 
-                # Получаем или создаём роль мута
+                # Нативный тайм-аут Discord работает максимум 28 дней
+                timeout_minutes = min(duration_minutes, 28 * 24 * 60)
+
+                # ГЛАВНОЕ: нативный тайм-аут Discord — блокирует сообщения,
+                # реакции и голос ВЕЗДЕ, независимо от ролей и прав каналов
+                try:
+                    await member.timeout(
+                        timedelta(minutes=timeout_minutes),
+                        reason=f"Мут: {reason}"
+                    )
+                except discord.Forbidden:
+                    await interaction.followup.send(
+                        "❌ У бота нет права **Модерация участников** (Moderate Members) "
+                        "или роль бота ниже роли пользователя!",
+                        ephemeral=True
+                    )
+                    return
+
+                # Роль — визуальная метка мута
                 mute_role = discord.utils.get(guild.roles, name=mute_role_name)
                 if not mute_role:
                     mute_role = await guild.create_role(
                         name=mute_role_name,
                         color=discord.Color.orange(),
-                        reason="Роль для замутированных пользователей"
+                        reason="Роль-метка для замутированных"
                     )
+                try:
+                    await member.add_roles(mute_role, reason=f"Мут: {reason}")
+                except Exception:
+                    pass
 
-                # ВСЕГДА синхронизируем права роли на всех каналах
-                # (иначе если роль уже существовала — запреты не прописаны и мут не работает)
-                for ch in guild.channels:
-                    try:
-                        overwrite = ch.overwrites_for(mute_role)
-                        # Пропускаем канал если запреты уже стоят (экономим rate limit)
-                        if overwrite.send_messages is False and overwrite.speak is False:
-                            continue
-                        await ch.set_permissions(
-                            mute_role,
-                            send_messages=False,
-                            speak=False,
-                            add_reactions=False,
-                            send_messages_in_threads=False,
-                            create_public_threads=False,
-                            create_private_threads=False
-                        )
-                    except Exception:
-                        pass
-
-                if not member:
-                    await interaction.followup.send("❌ Пользователь не на сервере!", ephemeral=True)
-                    return
-
-                # Добавляем мут
+                # Добавляем мут в хранилище
                 active_mutes[user.id] = {
                     "moderator": interaction.user,
                     "reason": reason,
@@ -1170,15 +1141,6 @@ class ModerationModal(Modal):
                     "guild_id": guild.id,
                     "mute_role_id": mute_role.id,
                 }
-
-                await member.add_roles(mute_role, reason=f"Мут: {reason}")
-
-                # Отключаем микрофон если в войсе
-                if member.voice:
-                    try:
-                        await member.edit(mute=True)
-                    except Exception:
-                        pass
 
                 # Лог в архив
                 archive_channel = bot.get_channel(ARCHIVE_CHANNEL_ID)
@@ -1209,18 +1171,12 @@ class ModerationModal(Modal):
                     ephemeral=True
                 )
 
-                # Запускаем таймер автоснятия мута в фоне
+                # Таймер снятия метки-роли (сам тайм-аут Discord снимет автоматически)
                 asyncio.create_task(
                     _auto_unmute(user.id, guild.id, mute_role.id, duration_minutes * 60, interaction.user)
                 )
 
             elif self.action_type == "бан":
-                # Сразу отвечаем на interaction чтобы не словить 404 пока настраиваем права
-                await interaction.response.send_message(
-                    f"⏳ Выдаю бан {user.mention} на **{duration_minutes} мин.**...",
-                    ephemeral=True
-                )
-
                 # Получаем или создаём роль бана
                 ban_role = discord.utils.get(guild.roles, name=ban_role_name)
                 if not ban_role:
@@ -1309,7 +1265,7 @@ class ModerationModal(Modal):
 
         except Exception as e:
             try:
-                await interaction.response.send_message(f"❌ Ошибка: {str(e)}", ephemeral=True)
+                await interaction.followup.send(f"❌ Ошибка: {str(e)}", ephemeral=True)
             except Exception:
                 pass
             print(f"Ошибка при применении {self.action_type}: {e}")
@@ -1336,7 +1292,7 @@ class RemovalModal(Modal):
         ))
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Сразу откладываем ответ — операции могут занять больше 3 секунд
+        # СРАЗУ откладываем ответ — защита от 404 Unknown interaction
         await interaction.response.defer(ephemeral=True)
 
         try:
@@ -1365,16 +1321,22 @@ class RemovalModal(Modal):
 
                 del active_mutes[user_id]
 
-                mute_role = discord.utils.get(guild.roles, name=mute_role_name)
                 member = guild.get_member(user.id)
-                if member and mute_role:
+                if member:
+                    # Снимаем нативный тайм-аут Discord
                     try:
-                        await member.remove_roles(mute_role, reason="Мут снят модератором")
-                        if member.voice:
-                            await member.edit(mute=False, reason="Мут снят")
+                        await member.timeout(None, reason="Мут снят модератором")
                     except Exception:
                         pass
+                    # Снимаем роль-метку
+                    mute_role = discord.utils.get(guild.roles, name=mute_role_name)
+                    if mute_role:
+                        try:
+                            await member.remove_roles(mute_role, reason="Мут снят модератором")
+                        except Exception:
+                            pass
 
+                # Обновляем статус в истории
                 for p in punishment_history:
                     if p["user_id"] == user_id and p["type"] == "мут" and p["status"] == "активный":
                         p["status"] = "снят вручную"
@@ -1402,6 +1364,7 @@ class RemovalModal(Modal):
 
                 del active_bans[user_id]
 
+                # Удаляем роль с участника
                 ban_role = discord.utils.get(guild.roles, name=ban_role_name)
                 member = guild.get_member(user.id)
                 if member and ban_role:
@@ -1410,8 +1373,7 @@ class RemovalModal(Modal):
                     except Exception:
                         pass
 
-                # Чистим overwrite роли бана только если больше нет активных банов
-                # (роль снята с участника — этого достаточно, каналы трогать не обязательно)
+                # Чистим overwrite роли бана с каналов ТОЛЬКО если больше нет активных банов
                 if ban_role and not active_bans:
                     for ch in guild.channels:
                         try:
@@ -1419,6 +1381,7 @@ class RemovalModal(Modal):
                         except Exception:
                             pass
 
+                # Обновляем статус в истории
                 for p in punishment_history:
                     if p["user_id"] == user_id and p["type"] == "бан" and p["status"] == "активный":
                         p["status"] = "снят вручную"
@@ -1447,6 +1410,102 @@ class RemovalModal(Modal):
                 await interaction.followup.send(f"❌ Ошибка: {str(e)}", ephemeral=True)
             except Exception:
                 pass
+
+
+# ==================== ВЕЧНЫЕ ПАНЕЛИ (PERSISTENT VIEWS) ====================
+
+def _has_mod_rights(interaction: discord.Interaction, ban_level=False) -> bool:
+    """Проверка прав для кнопок панели модерации"""
+    roles = interaction.user.roles
+    is_admin = discord.utils.get(interaction.guild.roles, name="Админ") in roles
+    is_curator = discord.utils.get(interaction.guild.roles, name="Куратор") in roles
+    is_moder = discord.utils.get(interaction.guild.roles, name="Модератор") in roles
+    if ban_level:
+        return is_admin or is_curator
+    return is_admin or is_curator or is_moder
+
+
+class ModerationPanelView(View):
+    """Вечная панель модерации — работает после перезапуска бота"""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🔇 Мут", style=discord.ButtonStyle.danger, custom_id="modpanel:mute")
+    async def mute_button(self, interaction: discord.Interaction, button: Button):
+        if not _has_mod_rights(interaction):
+            await interaction.response.send_message("❌ У вас нет прав!", ephemeral=True)
+            return
+        await interaction.response.send_modal(ModerationModal("мут"))
+
+    @discord.ui.button(label="🚫 Бан", style=discord.ButtonStyle.danger, custom_id="modpanel:ban")
+    async def ban_button(self, interaction: discord.Interaction, button: Button):
+        if not _has_mod_rights(interaction, ban_level=True):
+            await interaction.response.send_message("❌ Бан могут выдавать только Админ и Куратор!", ephemeral=True)
+            return
+        await interaction.response.send_modal(ModerationModal("бан"))
+
+    @discord.ui.button(label="🔊 Снять мут", style=discord.ButtonStyle.success, custom_id="modpanel:unmute")
+    async def unmute_button(self, interaction: discord.Interaction, button: Button):
+        if not _has_mod_rights(interaction):
+            await interaction.response.send_message("❌ У вас нет прав!", ephemeral=True)
+            return
+        await interaction.response.send_modal(RemovalModal("мут"))
+
+    @discord.ui.button(label="✅ Снять бан", style=discord.ButtonStyle.success, custom_id="modpanel:unban")
+    async def unban_button(self, interaction: discord.Interaction, button: Button):
+        if not _has_mod_rights(interaction, ban_level=True):
+            await interaction.response.send_message("❌ Снимать бан могут только Админ и Куратор!", ephemeral=True)
+            return
+        await interaction.response.send_modal(RemovalModal("бан"))
+
+    @discord.ui.button(label="📋 История", style=discord.ButtonStyle.blurple, custom_id="modpanel:history")
+    async def history_button(self, interaction: discord.Interaction, button: Button):
+        if not _has_mod_rights(interaction):
+            await interaction.response.send_message("❌ У вас нет прав!", ephemeral=True)
+            return
+        if not punishment_history:
+            await interaction.response.send_message("❌ История наказаний пуста!", ephemeral=True)
+            return
+
+        history_text = "**📋 ИСТОРИЯ НАКАЗАНИЙ:**\n\n"
+        for i, p in enumerate(punishment_history[-10:], 1):
+            status_emoji = "🔴" if p["status"] == "активный" else "✅" if p["status"] == "истёк" else "⏹️"
+            history_text += f"{i}. {status_emoji} **{p['type'].upper()}** - {p['user'].mention}\n"
+            history_text += f"   Модератор: {p['moderator'].mention}\n"
+            history_text += f"   Причина: {p['reason']}\n"
+            history_text += f"   Длительность: {p['duration']}\n"
+            history_text += f"   Статус: {p['status']}\n\n"
+
+        await interaction.response.send_message(history_text, ephemeral=True)
+
+
+class SupportPanelSelect(Select):
+    """Вечное меню выбора категории тикета"""
+
+    def __init__(self):
+        super().__init__(
+            placeholder="Выберите категорию...",
+            options=[
+                discord.SelectOption(label="Пожалаться на участника", description="Сообщить о нарушении"),
+                discord.SelectOption(label="Заявка на модератора", description="Стать участником команды"),
+                discord.SelectOption(label="Обжаловать блокировку", description="Оспорить ограничения"),
+                discord.SelectOption(label="Другое", description="Другой вопрос"),
+            ],
+            custom_id="supportpanel:category",
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        category = self.values[0]
+        await interaction.response.send_modal(TicketModal(category))
+
+
+class SupportPanelView(View):
+    """Вечная панель поддержки — работает после перезапуска бота"""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(SupportPanelSelect())
 
 
 # ==================== КОМАНДЫ ====================
@@ -1516,41 +1575,6 @@ async def moderation(ctx):
         await ctx.send("❌ У вас нет прав!", delete_after=5)
         return
 
-    class ModerationView(View):
-        @discord.ui.button(label="🔇 Мут", style=discord.ButtonStyle.danger)
-        async def mute_button(self, interaction: discord.Interaction, button: Button):
-            await interaction.response.send_modal(ModerationModal("мут"))
-
-        @discord.ui.button(label="🚫 Бан", style=discord.ButtonStyle.danger)
-        async def ban_button(self, interaction: discord.Interaction, button: Button):
-            await interaction.response.send_modal(ModerationModal("бан"))
-
-        @discord.ui.button(label="🔊 Снять мут", style=discord.ButtonStyle.success)
-        async def unmute_button(self, interaction: discord.Interaction, button: Button):
-            await interaction.response.send_modal(RemovalModal("мут"))
-
-        @discord.ui.button(label="✅ Снять бан", style=discord.ButtonStyle.success)
-        async def unban_button(self, interaction: discord.Interaction, button: Button):
-            await interaction.response.send_modal(RemovalModal("бан"))
-
-        @discord.ui.button(label="📋 История", style=discord.ButtonStyle.blurple)
-        async def history_button(self, interaction: discord.Interaction, button: Button):
-            if not punishment_history:
-                await interaction.response.send_message("❌ История наказаний пуста!", ephemeral=True)
-                return
-
-            # Показываем последние 10 наказаний
-            history_text = "**📋 ИСТОРИЯ НАКАЗАНИЙ:**\n\n"
-            for i, p in enumerate(punishment_history[-10:], 1):
-                status_emoji = "🔴" if p["status"] == "активный" else "✅" if p["status"] == "истёк" else "⏹️"
-                history_text += f"{i}. {status_emoji} **{p['type'].upper()}** - {p['user'].mention}\n"
-                history_text += f"   Модератор: {p['moderator'].mention}\n"
-                history_text += f"   Причина: {p['reason']}\n"
-                history_text += f"   Длительность: {p['duration']}\n"
-                history_text += f"   Статус: {p['status']}\n\n"
-
-            await interaction.response.send_message(history_text, ephemeral=True)
-
     embed = discord.Embed(
         title="⚙️ Панель модерации",
         description="Выберите действие ниже:",
@@ -1562,31 +1586,11 @@ async def moderation(ctx):
     embed.add_field(name="✅ Снять бан", value="Разбанить пользователя", inline=False)
     embed.add_field(name="📋 История", value="Посмотреть историю наказаний", inline=False)
 
-    await ctx.send(embed=embed, view=ModerationView())
+    await ctx.send(embed=embed, view=ModerationPanelView())
 
 
 @bot.command()
 async def support(ctx):
-    options = [
-        discord.SelectOption(label="Пожалаться на участника", description="Сообщить о нарушении"),
-        discord.SelectOption(label="Заявка на модератора", description="Стать участником команды"),
-        discord.SelectOption(label="Обжаловать блокировку", description="Оспорить ограничения"),
-        discord.SelectOption(label="Другое", description="Другой вопрос")
-    ]
-
-    class SupportSelect(Select):
-        def __init__(self):
-            super().__init__(placeholder="Выберите категорию...", options=options, custom_id="ticket_category")
-
-        async def callback(self, interaction: discord.Interaction):
-            category = self.values[0]
-            await interaction.response.send_modal(TicketModal(category))
-
-    class SupportView(View):
-        def __init__(self):
-            super().__init__()
-            self.add_item(SupportSelect())
-
     embed = discord.Embed(
         title="❓ Поддержка и обращения",
         description="Выберите категорию вашего обращения ниже и заполните форму.",
@@ -1594,7 +1598,7 @@ async def support(ctx):
     )
     embed.set_thumbnail(url="https://i.ibb.co/DDjrkN9B/channels4-profile.jpg")
 
-    await ctx.send(embed=embed, view=SupportView())
+    await ctx.send(embed=embed, view=SupportPanelView())
 
 
 @bot.command()
@@ -1606,25 +1610,7 @@ async def panel(ctx):
     )
     embed.set_thumbnail(url="https://i.ibb.co/DDjrkN9B/channels4-profile.jpg")
 
-    class SupportSelect(Select):
-        def __init__(self):
-            super().__init__(placeholder="Выберите категорию...", options=[
-                discord.SelectOption(label="Пожалаться на участника", description="Сообщить о нарушении"),
-                discord.SelectOption(label="Заявка на модератора", description="Стать участником команды"),
-                discord.SelectOption(label="Обжаловать блокировку", description="Оспорить ограничения"),
-                discord.SelectOption(label="Другое", description="Другой вопрос")
-            ], custom_id="ticket_category")
-
-        async def callback(self, interaction: discord.Interaction):
-            category = self.values[0]
-            await interaction.response.send_modal(TicketModal(category))
-
-    class SupportView(View):
-        def __init__(self):
-            super().__init__()
-            self.add_item(SupportSelect())
-
-    await ctx.send(embed=embed, view=SupportView())
+    await ctx.send(embed=embed, view=SupportPanelView())
 
 
 # ==================== ЗАПУСК БОТА ====================
