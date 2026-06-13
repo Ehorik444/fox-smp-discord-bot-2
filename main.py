@@ -4,23 +4,26 @@ from discord.ui import View, Button, Select, Modal, TextInput
 import asyncio
 from datetime import datetime, timedelta
 import io
+import json
+import os
 
 # Настройки
-TOKEN = "MTUxMzE5NzY2MDc3NjE3MzU5OA.GLJKwH.MQaphLmtbYfxev-EWjojfwBBoqE_woWKPJzFXg"
-LOG_CHANNEL_ID = 1514694347441049601  # Канал для логов
-TICKETS_CHANNEL_ID = 1514694429796073522  # Канал для тикетов
-TICKETS_STORAGE_CHANNEL_ID = 1514693865096085595  # Хранилище для данных тикетов
-VOICE_STORAGE_CHANNEL_ID = 1514693580235477012  # Хранилище для голосовых комнат
-ARCHIVE_CHANNEL_ID = 1514694263873474703  # Архив для мутов и банов
-BAN_CHANNEL_1 = 1514694051914449039  # Канал 1 для забаненных
-BAN_CHANNEL_2 = 1514694171879805110  # Канал 2 для забаненных
+# Настройки
+TOKEN = ""
+LOG_CHANNEL_ID = 1515062614680670319  # Канал для логов
+TICKETS_CHANNEL_ID = 1513944469995655279  # Канал для тикетов
+TICKETS_STORAGE_CHANNEL_ID = 1514331798778417282  # Хранилище для данных тикетов
+VOICE_STORAGE_CHANNEL_ID = 1514326798656081930  # Хранилище для голосовых комнат
+ARCHIVE_CHANNEL_ID = 1514650516779565189  # Архив для мутов и банов
+BAN_CHANNEL_1 = 1514654568913305780  # Канал 1 для забаненных
+BAN_CHANNEL_2 = 1514266059903991878  # Канал 2 для забаненных
 
 # ID ролей для наказаний (если None, будут созданы автоматически)
 MUTE_ROLE_ID = None  # Роль для мута (если None - создастся 'Блокировка чата')
 BAN_ROLE_ID = None  # Роль для бана (если None - создастся 'Пользователь заблокирован')
 
 # Шаблонный голосовой канал и категория
-TEMPLATE_VOICE_CHANNEL_NAME = "создать войс"
+TEMPLATE_VOICE_CHANNEL_NAME = "🎤 | Создать комнату |🎤"
 VOICE_CATEGORY_ID = None  # ID категории где находится "создать войс" канал
 
 # Интенты
@@ -47,6 +50,50 @@ ban_role_name = "Пользователь заблокирован"
 # История всех наказаний
 punishment_history = []
 
+# ==================== СОХРАНЕНИЕ НАКАЗАНИЙ (чтобы не сбрасывались) ====================
+PUNISH_FILE = "punishments.json"
+
+
+def save_punishments():
+    """Сохраняет активные муты и баны в файл"""
+    data = {"mutes": {}, "bans": {}}
+    for uid, info in active_mutes.items():
+        data["mutes"][str(uid)] = {
+            "reason": info.get("reason", ""),
+            "duration": info.get("duration", 0),
+            "end_time": info["end_time"].isoformat() if info.get("end_time") else None,
+            "guild_id": info.get("guild_id"),
+            "mute_role_id": info.get("mute_role_id"),
+            "moderator_id": getattr(info.get("moderator"), "id", None),
+        }
+    for uid, info in active_bans.items():
+        data["bans"][str(uid)] = {
+            "reason": info.get("reason", ""),
+            "duration": info.get("duration", 0),
+            "end_time": info["end_time"].isoformat() if info.get("end_time") else None,
+            "guild_id": info.get("guild_id"),
+            "ban_role_id": info.get("ban_role_id"),
+            "moderator_id": getattr(info.get("moderator"), "id", None),
+            "permanent": info.get("permanent", False),
+        }
+    try:
+        with open(PUNISH_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Не удалось сохранить наказания: {e}")
+
+
+def load_punishments_raw():
+    """Читает сырые данные наказаний из файла"""
+    if not os.path.exists(PUNISH_FILE):
+        return {"mutes": {}, "bans": {}}
+    try:
+        with open(PUNISH_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Не удалось прочитать наказания: {e}")
+        return {"mutes": {}, "bans": {}}
+
 
 # ==================== СОБЫТИЯ ====================
 
@@ -59,25 +106,166 @@ async def on_ready():
     bot.add_view(ModerationPanelView())
     bot.add_view(SupportPanelView())
     print("✅ Вечные панели зарегистрированы")
-    # Восстанавливаем таймеры для активных мутов/банов после перезапуска
-    # (active_mutes и active_bans хранятся в памяти, при перезапуске сбрасываются)
-    print("⚠️ Внимание: активные муты/баны сбрасываются при перезапуске бота!")
+    # Восстанавливаем активные муты/баны из файла после перезапуска
+    await restore_punishments()
+    print("✅ Активные наказания восстановлены")
+
+
+async def restore_punishments():
+    """Загружает муты/баны из файла, восстанавливает таймеры и заново применяет бан-права"""
+    raw = load_punishments_raw()
+    now = datetime.now()
+
+    # ── Муты ──
+    for uid_str, info in raw.get("mutes", {}).items():
+        uid = int(uid_str)
+        end_time = datetime.fromisoformat(info["end_time"]) if info.get("end_time") else None
+        if not end_time or end_time <= now:
+            continue  # истёк
+        guild = bot.get_guild(info.get("guild_id"))
+        moderator = (guild.get_member(info["moderator_id"]) if guild and info.get("moderator_id") else None) or bot.user
+
+        active_mutes[uid] = {
+            "moderator": moderator,
+            "reason": info.get("reason", ""),
+            "duration": info.get("duration", 0),
+            "timestamp": now,
+            "end_time": end_time,
+            "guild_id": info.get("guild_id"),
+            "mute_role_id": info.get("mute_role_id"),
+        }
+        remaining = (end_time - now).total_seconds()
+        asyncio.create_task(
+            _auto_unmute(uid, info.get("guild_id"), info.get("mute_role_id"), remaining, moderator)
+        )
+
+    # ── Баны ──
+    for uid_str, info in raw.get("bans", {}).items():
+        uid = int(uid_str)
+        end_time = datetime.fromisoformat(info["end_time"]) if info.get("end_time") else None
+        permanent = info.get("permanent", False)
+        if not permanent and (not end_time or end_time <= now):
+            continue  # истёк
+        guild = bot.get_guild(info.get("guild_id"))
+        moderator = (guild.get_member(info["moderator_id"]) if guild and info.get("moderator_id") else None) or bot.user
+
+        active_bans[uid] = {
+            "moderator": moderator,
+            "reason": info.get("reason", ""),
+            "duration": info.get("duration", 0),
+            "timestamp": now,
+            "end_time": end_time,
+            "guild_id": info.get("guild_id"),
+            "ban_role_id": info.get("ban_role_id"),
+            "permanent": permanent,
+        }
+
+        # Заново применяем права бана (на случай если слетели)
+        if guild:
+            member = guild.get_member(uid)
+            ban_role = guild.get_role(info.get("ban_role_id")) if info.get("ban_role_id") else None
+            if member:
+                if ban_role:
+                    try:
+                        await member.add_roles(ban_role, reason="Восстановление бана после перезапуска")
+                    except Exception:
+                        pass
+                await _apply_ban_overwrites(guild, member)
+
+        # Восстанавливаем таймер (если не вечный)
+        if not permanent and end_time:
+            remaining = (end_time - now).total_seconds()
+            asyncio.create_task(
+                _auto_unban(uid, info.get("guild_id"), info.get("ban_role_id"), remaining, moderator)
+            )
+
+
+async def _apply_ban_overwrites(guild, member):
+    """Ставит запрет на все каналы кроме двух бан-каналов (персонально на участника)"""
+    ban_channels = [BAN_CHANNEL_1, BAN_CHANNEL_2]
+    for ch in guild.channels:
+        try:
+            if ch.id in ban_channels:
+                await ch.set_permissions(
+                    member,
+                    view_channel=True,
+                    read_message_history=True,
+                    send_messages=False,
+                    connect=True if isinstance(ch, discord.VoiceChannel) else None,
+                    speak=False if isinstance(ch, discord.VoiceChannel) else None,
+                )
+            else:
+                await ch.set_permissions(
+                    member,
+                    view_channel=False,
+                    connect=False if isinstance(ch, discord.VoiceChannel) else None,
+                )
+        except Exception:
+            pass
+
+
+@bot.event
+async def on_member_join(member):
+    """При входе участника — восстанавливаем мут/бан, если он активен (защита от обхода через перезаход)"""
+    guild = member.guild
+
+    # Восстановление мута
+    if member.id in active_mutes:
+        info = active_mutes[member.id]
+        end_time = info.get("end_time")
+        if not end_time or end_time > datetime.now():
+            # Заново вешаем нативный тайм-аут на оставшееся время
+            if end_time:
+                remaining = end_time - datetime.now()
+                capped = min(remaining, timedelta(days=28))
+                try:
+                    await member.timeout(capped, reason="Восстановление мута после перезахода")
+                except Exception:
+                    pass
+            # Возвращаем роль-метку
+            mute_role = guild.get_role(info.get("mute_role_id")) or discord.utils.get(guild.roles, name=mute_role_name)
+            if mute_role:
+                try:
+                    await member.add_roles(mute_role, reason="Восстановление мута после перезахода")
+                except Exception:
+                    pass
+
+    # Восстановление бана
+    if member.id in active_bans:
+        info = active_bans[member.id]
+        end_time = info.get("end_time")
+        if info.get("permanent") or not end_time or end_time > datetime.now():
+            ban_role = guild.get_role(info.get("ban_role_id")) or discord.utils.get(guild.roles, name=ban_role_name)
+            if ban_role:
+                try:
+                    await member.add_roles(ban_role, reason="Восстановление бана после перезахода")
+                except Exception:
+                    pass
+            await _apply_ban_overwrites(guild, member)
 
 
 @bot.event
 async def on_guild_channel_create(channel):
-    """При создании нового канала — скрываем его от забаненных пользователей через роль"""
-    # Роль бана уже имеет deny view_channel=False на @everyone через overwrites всех каналов,
-    # но надёжнее явно прописывать запрет для роли бана на новом канале
+    """При создании нового канала — скрываем его от всех активных забаненных"""
     guild = channel.guild
-    ban_role = discord.utils.get(guild.roles, name="Пользователь заблокирован")
-    if ban_role and isinstance(channel, (discord.TextChannel, discord.VoiceChannel, discord.ForumChannel)):
-        # Проверяем, есть ли активные баны
-        if active_bans:
+    if not active_bans:
+        return
+    ban_channels = [BAN_CHANNEL_1, BAN_CHANNEL_2]
+    if channel.id in ban_channels:
+        return
+    for user_id, info in active_bans.items():
+        if info.get("guild_id") != guild.id:
+            continue
+        member = guild.get_member(user_id)
+        if member:
             try:
-                await channel.set_permissions(ban_role, view_channel=False)
+                await channel.set_permissions(
+                    member,
+                    view_channel=False,
+                    connect=False if isinstance(channel, discord.VoiceChannel) else None,
+                )
             except Exception as e:
-                print(f"Не удалось скрыть новый канал от роли бана: {e}")
+                print(f"Не удалось скрыть новый канал от забаненного {user_id}: {e}")
 
 
 @bot.event
@@ -517,14 +705,19 @@ async def create_voice_room(member, template_channel):
     except Exception as e:
         print(f"Ошибка при установке прав: {e}")
 
-    # Если есть активные баны — скрываем новый канал от роли бана
+    # Если есть активные баны — скрываем новый войс от каждого забаненного
     if active_bans:
-        ban_role = discord.utils.get(guild.roles, name=ban_role_name)
-        if ban_role:
-            try:
-                await voice_channel.set_permissions(ban_role, view_channel=False)
-            except Exception as e:
-                print(f"Не удалось скрыть войс от роли бана: {e}")
+        for ban_uid, info in active_bans.items():
+            if info.get("guild_id") != guild.id:
+                continue
+            banned_member = guild.get_member(ban_uid)
+            if banned_member:
+                try:
+                    await voice_channel.set_permissions(
+                        banned_member, view_channel=False, connect=False
+                    )
+                except Exception as e:
+                    print(f"Не удалось скрыть войс от забаненного {ban_uid}: {e}")
 
     try:
         await member.move_to(voice_channel)
@@ -943,6 +1136,7 @@ async def _auto_unmute(user_id: int, guild_id: int, mute_role_id: int, delay_sec
         return  # Уже снят вручную
 
     del active_mutes[user_id]
+    save_punishments()
 
     guild = bot.get_guild(guild_id)
     if not guild:
@@ -982,6 +1176,7 @@ async def _auto_unban(user_id: int, guild_id: int, ban_role_id: int, delay_secon
         return  # Уже снят вручную
 
     del active_bans[user_id]
+    save_punishments()
 
     guild = bot.get_guild(guild_id)
     if not guild:
@@ -997,11 +1192,11 @@ async def _auto_unban(user_id: int, guild_id: int, ban_role_id: int, delay_secon
         except Exception:
             pass
 
-    # Снимаем overwrite роли бана с каналов ТОЛЬКО если больше нет активных банов
-    if ban_role and not active_bans:
+    # Снимаем персональные overwrites участника со всех каналов
+    if member:
         for ch in guild.channels:
             try:
-                await ch.set_permissions(ban_role, overwrite=None)
+                await ch.set_permissions(member, overwrite=None)
             except Exception:
                 pass
 
@@ -1136,6 +1331,7 @@ class ModerationModal(Modal):
                     "guild_id": guild.id,
                     "mute_role_id": mute_role.id,
                 }
+                save_punishments()
 
                 # Лог в архив
                 archive_channel = bot.get_channel(ARCHIVE_CHANNEL_ID)
@@ -1172,7 +1368,11 @@ class ModerationModal(Modal):
                 )
 
             elif self.action_type == "бан":
-                # Получаем или создаём роль бана
+                if not member:
+                    await interaction.followup.send("❌ Пользователь не на сервере!", ephemeral=True)
+                    return
+
+                # Получаем или создаём роль-метку бана
                 ban_role = discord.utils.get(guild.roles, name=ban_role_name)
                 if not ban_role:
                     ban_role = await guild.create_role(
@@ -1181,32 +1381,41 @@ class ModerationModal(Modal):
                         reason="Роль для забаненных пользователей"
                     )
 
-                # Настраиваем права роли бана на всех каналах (кроме бан-каналов)
-                for ch in guild.channels:
-                    if ch.id not in [BAN_CHANNEL_1, BAN_CHANNEL_2]:
-                        try:
-                            await ch.set_permissions(ban_role, view_channel=False)
-                        except Exception:
-                            pass
-
-                # Даём доступ (только чтение) к каналам для забаненных
-                for ban_ch_id in [BAN_CHANNEL_1, BAN_CHANNEL_2]:
-                    ban_ch = guild.get_channel(ban_ch_id)
-                    if ban_ch:
-                        try:
-                            await ban_ch.set_permissions(ban_role,
-                                view_channel=True, read_message_history=True, send_messages=False)
-                        except Exception:
-                            pass
-
                 if member:
                     await member.add_roles(ban_role, reason=f"Бан: {reason}")
-                    # Отключаем из войса
-                    if member.voice:
-                        try:
-                            await member.move_to(None)
-                        except Exception:
-                            pass
+
+                # ГЛАВНОЕ: ставим запрет напрямую на самого участника.
+                # Overwrite на конкретного пользователя имеет высший приоритет
+                # и перебивает любые его роли и права @everyone.
+                ban_channels = [BAN_CHANNEL_1, BAN_CHANNEL_2]
+                for ch in guild.channels:
+                    try:
+                        if ch.id in ban_channels:
+                            # Бан-каналы: видит, читает, но писать не может
+                            await ch.set_permissions(
+                                member,
+                                view_channel=True,
+                                read_message_history=True,
+                                send_messages=False,
+                                connect=True if isinstance(ch, discord.VoiceChannel) else None,
+                                speak=False if isinstance(ch, discord.VoiceChannel) else None,
+                            )
+                        else:
+                            # Все остальные каналы — полностью скрыты
+                            await ch.set_permissions(
+                                member,
+                                view_channel=False,
+                                connect=False if isinstance(ch, discord.VoiceChannel) else None,
+                            )
+                    except Exception as e:
+                        print(f"Не удалось задать права на канал {ch.id}: {e}")
+
+                # Отключаем из войса
+                if member.voice:
+                    try:
+                        await member.move_to(None)
+                    except Exception:
+                        pass
 
                 # Добавляем бан
                 active_bans[user.id] = {
@@ -1219,6 +1428,7 @@ class ModerationModal(Modal):
                     "ban_role_id": ban_role.id,
                     "permanent": False
                 }
+                save_punishments()
 
                 # Лог в архив
                 archive_channel = bot.get_channel(ARCHIVE_CHANNEL_ID)
@@ -1315,6 +1525,7 @@ class RemovalModal(Modal):
                     return
 
                 del active_mutes[user_id]
+                save_punishments()
 
                 member = guild.get_member(user.id)
                 if member:
@@ -1358,6 +1569,7 @@ class RemovalModal(Modal):
                     return
 
                 del active_bans[user_id]
+                save_punishments()
 
                 # Удаляем роль с участника
                 ban_role = discord.utils.get(guild.roles, name=ban_role_name)
@@ -1368,11 +1580,11 @@ class RemovalModal(Modal):
                     except Exception:
                         pass
 
-                # Чистим overwrite роли бана с каналов ТОЛЬКО если больше нет активных банов
-                if ban_role and not active_bans:
+                # Снимаем персональные overwrites участника со всех каналов
+                if member:
                     for ch in guild.channels:
                         try:
-                            await ch.set_permissions(ban_role, overwrite=None)
+                            await ch.set_permissions(member, overwrite=None)
                         except Exception:
                             pass
 
