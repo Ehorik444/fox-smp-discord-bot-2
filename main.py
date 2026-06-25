@@ -7,8 +7,7 @@ import io
 import json
 import os
 
-# Настройки
-# Настройки
+# Настройкики
 TOKEN = ""
 LOG_CHANNEL_ID = 1515062614680670319  # Канал для логов
 TICKETS_CHANNEL_ID = 1513944469995655279  # Канал для тикетов
@@ -382,16 +381,17 @@ class LimitModal(discord.ui.Modal):
 class BanSelect(discord.ui.Select):
     def __init__(self, voice_channel_id: int, members: list, owner_id: int, guild: discord.Guild):
         options = []
-        for member in guild.members:
+        for member in members:
             if not member.bot and member.id != owner_id:
                 options.append(discord.SelectOption(
                     label=member.display_name,
                     value=str(member.id),
-                    description=f"{member.name}#{member.discriminator}"
+                    description=member.name
                 ))
         if not options:
             options = [discord.SelectOption(label="Нет других участников", value="0",
                                             description="В комнате только вы - владелец")]
+        options = options[:25]
 
         super().__init__(
             placeholder="Выберите пользователя для бана...",
@@ -433,16 +433,19 @@ class BanSelect(discord.ui.Select):
 class MuteSelect(discord.ui.Select):
     def __init__(self, voice_channel_id: int, members: list, owner_id: int, guild: discord.Guild):
         options = []
-        for member in guild.members:
+        for member in members:
             if not member.bot and member.id != owner_id:
                 options.append(discord.SelectOption(
                     label=member.display_name,
                     value=str(member.id),
-                    description=f"{member.name}#{member.discriminator}"
+                    description=member.name
                 ))
+        # Discord не принимает пустой список — подстраховка
         if not options:
             options = [discord.SelectOption(label="Нет других участников", value="0",
                                             description="В комнате только вы - владелец")]
+        # Лимит Discord — максимум 25 опций
+        options = options[:25]
 
         super().__init__(
             placeholder="Выберите пользователя для мута...",
@@ -484,16 +487,17 @@ class MuteSelect(discord.ui.Select):
 class VideoSelect(discord.ui.Select):
     def __init__(self, voice_channel_id: int, members: list, owner_id: int, guild: discord.Guild):
         options = []
-        for member in guild.members:
+        for member in members:
             if not member.bot and member.id != owner_id:
                 options.append(discord.SelectOption(
                     label=member.display_name,
                     value=str(member.id),
-                    description=f"{member.name}#{member.discriminator}"
+                    description=member.name
                 ))
         if not options:
             options = [discord.SelectOption(label="Нет других участников", value="0",
                                             description="В комнате только вы - владелец")]
+        options = options[:25]
 
         super().__init__(
             placeholder="Выберите пользователя для отключения видео...",
@@ -602,7 +606,13 @@ class VoiceChannelManagementView(discord.ui.View):
             await interaction.response.send_message("❌ Голосовой канал не найден.", ephemeral=True)
             return
 
-        members = [m for m in voice_channel.members if m != interaction.guild.me]
+        members = [m for m in voice_channel.members
+                   if m != interaction.guild.me and m.id != self.owner_id]
+
+        if not members:
+            await interaction.response.send_message(
+                "❌ В комнате нет других участников, которых можно забанить.", ephemeral=True)
+            return
 
         view = discord.ui.View()
         view.add_item(BanSelect(self.voice_channel_id, members, self.owner_id, interaction.guild))
@@ -627,7 +637,13 @@ class VoiceChannelManagementView(discord.ui.View):
             await interaction.response.send_message("❌ Голосовой канал не найден.", ephemeral=True)
             return
 
-        members = [m for m in voice_channel.members if m != interaction.guild.me]
+        members = [m for m in voice_channel.members
+                   if m != interaction.guild.me and m.id != self.owner_id]
+
+        if not members:
+            await interaction.response.send_message(
+                "❌ В комнате нет других участников, которых можно замутить.", ephemeral=True)
+            return
 
         view = discord.ui.View()
         view.add_item(MuteSelect(self.voice_channel_id, members, self.owner_id, interaction.guild))
@@ -651,7 +667,13 @@ class VoiceChannelManagementView(discord.ui.View):
             await interaction.response.send_message("❌ Голосовой канал не найден.", ephemeral=True)
             return
 
-        members = [m for m in voice_channel.members if m != interaction.guild.me]
+        members = [m for m in voice_channel.members
+                   if m != interaction.guild.me and m.id != self.owner_id]
+
+        if not members:
+            await interaction.response.send_message(
+                "❌ В комнате нет других участников, у которых можно отключить видео.", ephemeral=True)
+            return
 
         view = discord.ui.View()
         view.add_item(VideoSelect(self.voice_channel_id, members, self.owner_id, interaction.guild))
@@ -694,8 +716,6 @@ async def create_voice_room(member, template_channel):
             view_channel=True,
             connect=True,
             manage_channels=True,
-            mute_members=True,
-            deafen_members=True,
             move_members=True
         )
     }
